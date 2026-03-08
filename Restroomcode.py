@@ -129,6 +129,7 @@ def fetch_connected_sensors(mongo_client: MongoClient,
         restroom_id = str(sensor_doc.get("restroomId", ""))
         sensor_type = sensor_doc.get("sensorType", "")
         unique_id = sensor_doc.get("uniqueId", "")
+        sensor_name = sensor_doc.get("sensorName") or sensor_doc.get("name") or unique_id or f"sensor-{sensor_id[-6:]}"
         is_connected = sensor_doc.get("isConnected", False)
         
         if is_connected and sensor_type:
@@ -138,10 +139,11 @@ def fetch_connected_sensors(mongo_client: MongoClient,
                 "building_id": building_id,
                 "restroom_id": restroom_id,
                 "sensor_type": sensor_type,
+                "sensor_name": sensor_name,
                 "unique_id": unique_id,
                 "is_connected": is_connected
             })
-            print(f"[MongoDB] Loaded sensor: {unique_id} (type: {sensor_type}, id: {sensor_id}, owner: {owner_id})")
+            print(f"[MongoDB] Loaded sensor: {sensor_name} / {unique_id} (type: {sensor_type}, id: {sensor_id}, owner: {owner_id})")
         else:
             print(f"[WARN] Skipping sensor {sensor_id} - isConnected={is_connected} or missing sensorType")
     
