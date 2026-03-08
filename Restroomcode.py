@@ -237,6 +237,7 @@ def create_notification(mongo_client: MongoClient,
         db = mongo_client[db_name]
         
         notification_doc = {
+            "type": "normal alter",
             "alertId": str(alert_info.get('_id')),  # Use _id from alert document
             "alertName": alert_info.get('name'),
             "alertType": alert_info.get('alertType'),
@@ -302,33 +303,49 @@ def infer_sensor_value_for_rule(sensor_type: str, data: Dict[str, Any]) -> Any:
 
 def evaluate_rule_condition(current_value: Any, rule_min: Any, rule_max: Any) -> bool:
     """
-    Return True when current_value violates the min/max rule condition.
+    Return True when current_value violates the rule condition.
+
+    Rules:
+    - Numeric min/max: trigger when value < min or value > max
+    - Numeric min only: trigger when value < min
+    - Numeric max only: trigger when value > max
+    - Non-numeric min only (state/bool): trigger when value == min
     """
     if current_value is None:
         return False
 
-    # Boolean / state equality checks when only min is provided
+    def to_number_strict(value: Any) -> Optional[float]:
+        if isinstance(value, bool):
+            return None
+        return safe_float(value, None)
+
+    current_num = to_number_strict(current_value)
+    min_num = to_number_strict(rule_min)
+    max_num = to_number_strict(rule_max)
+
+    # Numeric threshold checks (only when current value is numeric)
+    if current_num is not None:
+        # Both bounds present
+        if min_num is not None and max_num is not None:
+            return current_num < min_num or current_num > max_num
+
+        # Single-bound rules
+        if min_num is not None:
+            return current_num < min_num
+        if max_num is not None:
+            return current_num > max_num
+
+        return False
+
+    # Non-numeric rules: only allow equality check when max is not provided
     if rule_max is None and rule_min is not None:
         current_bool = to_bool_if_possible(current_value)
         min_bool = to_bool_if_possible(rule_min)
         if current_bool is not None and min_bool is not None:
             return current_bool == min_bool
 
-        # Fallback to case-insensitive string equality for state-like values
         return str(current_value).strip().lower() == str(rule_min).strip().lower()
 
-    # Numeric threshold checks
-    current_num = safe_float(current_value, None)
-    min_num = safe_float(rule_min, None)
-    max_num = safe_float(rule_max, None)
-
-    if current_num is None:
-        return False
-
-    if min_num is not None and current_num < min_num:
-        return True
-    if max_num is not None and current_num > max_num:
-        return True
     return False
 
 
