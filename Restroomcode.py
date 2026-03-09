@@ -10,6 +10,7 @@ Restroom sensor simulator with real-time MongoDB change detection and custom DB 
 - Supports custom database routing per owner (checks auths collection)
 - **NEW: Checks alerts collection and creates notifications when thresholds are breached**
 - Uses pymongo and pymysql
+
 """
 
 import time
@@ -45,7 +46,7 @@ SQL_PASSWORD = "security890"
 SQL_PORT = 3306
 
 # Insert interval (30 seconds)
-INSERT_INTERVAL_SECONDS = 30
+INSERT_INTERVAL_SECONDS = 200
 
 # Flag to signal reload of sensors
 sensors_reload_flag = threading.Event()
@@ -339,11 +340,18 @@ def evaluate_rule_condition(current_value: Any, rule_min: Any, rule_max: Any) ->
 
     # Non-numeric rules: only allow equality check when max is not provided
     if rule_max is None and rule_min is not None:
-        current_bool = to_bool_if_possible(current_value)
-        min_bool = to_bool_if_possible(rule_min)
-        if current_bool is not None and min_bool is not None:
-            return current_bool == min_bool
+        # If current_value is already a Python bool (occupancy, water_leakage),
+        # compare booleans directly. Do NOT coerce string states (e.g. stall_status
+        # 'occupied') to bool — that would cause false positives when rule_min=True
+        # matches a stall 'occupied' string it was never intended for.
+        if isinstance(current_value, bool):
+            min_bool = to_bool_if_possible(rule_min)
+            if min_bool is not None:
+                return current_value == min_bool
+            # rule_min cannot be interpreted as a bool — no match
+            return False
 
+        # For string sensor states (stall_status, etc.) use plain string equality
         return str(current_value).strip().lower() == str(rule_min).strip().lower()
 
     return False
@@ -369,6 +377,11 @@ def create_ruleengine_notification(mongo_client: MongoClient,
         else:
             condition_text = f"outside range ({min_val}-{max_val})"
 
+        # platform and email are stored inside values.value, not at rule top-level
+        rule_val_obj = ((rule_info.get("values") or {}).get("value")) or {}
+        platform = rule_val_obj.get("platform") or rule_info.get("platform", "platform")
+        email = rule_val_obj.get("email") or rule_info.get("email")
+
         notification_doc = {
             "type": "ruleengine",
             "ruleId": str(rule_info.get("_id")),
@@ -387,8 +400,8 @@ def create_ruleengine_notification(mongo_client: MongoClient,
             "status": "active",
             "timestamp": datetime.datetime.now(pytz.UTC),
             "read": False,
-            "platform": rule_info.get("platform", "web"),
-            "email": rule_info.get("email")
+            "platform": platform,
+            "email": email
         }
 
         result = db[notifications_collection].insert_one(notification_doc)
@@ -432,7 +445,11 @@ def check_rules_for_data(mongo_client: MongoClient,
                 continue
 
             rule_values = (((rule.get("values") or {}).get("value")) or {})
-            sensor_rule = rule_values.get(sensor_id) or rule_values.get(str(sensor_id))
+            # Use explicit None check instead of `or` to avoid skipping a valid
+            # empty dict (falsy) and accidentally picking a wrong key's value
+            sensor_rule = rule_values.get(sensor_id)
+            if sensor_rule is None:
+                sensor_rule = rule_values.get(str(sensor_id))
             if not isinstance(sensor_rule, dict):
                 continue
 
@@ -505,15 +522,23 @@ def check_alerts_for_data(mongo_client: MongoClient,
             if alert_type == "doorQueue" and sensor_type == "door_queue":
                 count = data.get('count')
                 if count is not None:
-                    # Convert strings to numbers
-                    min_count = float(value_config.get('min', 0))
-                    max_count = float(value_config.get('max', 999999))
+                    min_count = safe_float(value_config.get('min'), None)
+                    max_count = safe_float(value_config.get('max'), None)
 
-                    print(f"      Queue count: {count}, acceptable range: {min_count}-{max_count}")
-                    if count < min_count or count > max_count:
+                    if min_count is not None and max_count is not None:
+                        print(f"      Queue count: {count}, acceptable range: {min_count}-{max_count}")
+                        if count < min_count or count > max_count:
+                            triggered = True
+                            triggered_value = count
+                            message = f"Queue count {count} outside acceptable range ({min_count}-{max_count})"
+                    elif min_count is not None and count < min_count:
                         triggered = True
                         triggered_value = count
-                        message = f"Queue count {count} outside acceptable range ({min_count}-{max_count})"
+                        message = f"Queue count {count} below minimum {min_count}"
+                    elif max_count is not None and count > max_count:
+                        triggered = True
+                        triggered_value = count
+                        message = f"Queue count {count} above maximum {max_count}"
             
             # Stall Status alerts
             elif alert_type == "stallStatus" and sensor_type == "stall_status":
@@ -556,72 +581,106 @@ def check_alerts_for_data(mongo_client: MongoClient,
             elif alert_type == "airQuality" and sensor_type == "air_quality":
                 aqi = data.get('aqi')
                 if aqi is not None:
-                    min_val = float(value_config.get('min', 0))
-                    max_val = float(value_config.get('max', 999999))
+                    min_val = safe_float(value_config.get('min'), None)
+                    max_val = safe_float(value_config.get('max'), None)
 
-                    print(f"      AQI: {aqi}, acceptable range: {min_val}-{max_val}")
-                    if aqi < min_val or aqi > max_val:
+                    if min_val is not None and max_val is not None:
+                        print(f"      AQI: {aqi}, acceptable range: {min_val}-{max_val}")
+                        if aqi < min_val or aqi > max_val:
+                            triggered = True
+                            triggered_value = aqi
+                            message = f"AQI {aqi} outside acceptable range ({min_val}-{max_val})"
+                    elif min_val is not None and aqi < min_val:
                         triggered = True
                         triggered_value = aqi
-                        message = f"AQI {aqi} outside acceptable range ({min_val}-{max_val})"
+                        message = f"AQI {aqi} below minimum {min_val}"
+                    elif max_val is not None and aqi > max_val:
+                        triggered = True
+                        triggered_value = aqi
+                        message = f"AQI {aqi} above maximum {max_val}"
+                    else:
+                        print(f"      AQI alert skipped: neither min nor max configured")
             
             # Toilet Paper alerts
             elif alert_type == "toiletPaper" and sensor_type == "toilet_paper":
                 level = data.get('level')
                 if level is not None:
                     min_level = safe_float(value_config.get('min'), None)
+                    max_level = safe_float(value_config.get('max'), None)
 
-                    print(f"Toilet paper level: {level}%, min threshold: {min_level}")
+                    print(f"Toilet paper level: {level}%, thresholds: min={min_level}, max={max_level}")
 
-                    # Only trigger if min_level is properly configured
                     if min_level is not None and level < min_level:
                         triggered = True
                         triggered_value = level
                         message = f"Toilet paper low: {level}% < {min_level}%"
                         print(f"Alert condition met: {level} < {min_level}")
-                    elif min_level is None:
-                        print("Alert skipped: min_level not configured")
+                    elif max_level is not None and level > max_level:
+                        triggered = True
+                        triggered_value = level
+                        message = f"Toilet paper high: {level}% > {max_level}%"
+                        print(f"Alert condition met: {level} > {max_level}")
+                    elif min_level is None and max_level is None:
+                        print("Alert skipped: neither min_level nor max_level configured")
             
             # Soap Dispenser alerts
             elif alert_type == "soapDispenser" and sensor_type == "soap_dispenser":
                 level = data.get('level')
                 if level is not None:
                     min_level = safe_float(value_config.get('min'), None)
+                    max_level = safe_float(value_config.get('max'), None)
 
-                    print(f"Soap level: {level}%, min threshold: {min_level}")
+                    print(f"Soap level: {level}%, thresholds: min={min_level}, max={max_level}")
 
-                    # Only trigger if min_level is properly configured
                     if min_level is not None and level < min_level:
                         triggered = True
                         triggered_value = level
                         message = f"Soap low: {level}% < {min_level}%"
                         print(f"Alert condition met: {level} < {min_level}")
-                    elif min_level is None:
-                        print("Alert skipped: min_level not configured")
+                    elif max_level is not None and level > max_level:
+                        triggered = True
+                        triggered_value = level
+                        message = f"Soap high: {level}% > {max_level}%"
+                        print(f"Alert condition met: {level} > {max_level}")
+                    elif min_level is None and max_level is None:
+                        print("Alert skipped: neither min_level nor max_level configured")
             
             # Handwash alerts
             elif alert_type == "handwash" and sensor_type == "handwash":
                 level = data.get('level')
                 if level is not None:
                     min_level = safe_float(value_config.get('min'), None)
+                    max_level = safe_float(value_config.get('max'), None)
 
-                    print(f"      Handwash level: {level}%, min threshold: {min_level}")
+                    print(f"      Handwash level: {level}%, thresholds: min={min_level}, max={max_level}")
 
-                    # Only trigger if min_level is properly configured
                     if min_level is not None and level < min_level:
                         triggered = True
                         triggered_value = level
                         message = f"Handwash low: {level}% < {min_level}%"
                         print(f"      Alert condition met: {level} < {min_level}")
-                    elif min_level is None:
-                        print(f"Alert skipped: min_level not configured")
+                    elif max_level is not None and level > max_level:
+                        triggered = True
+                        triggered_value = level
+                        message = f"Handwash high: {level}% > {max_level}%"
+                        print(f"      Alert condition met: {level} > {max_level}")
+                    elif min_level is None and max_level is None:
+                        print(f"Alert skipped: neither min_level nor max_level configured")
             
             # Water Leakage alerts
             elif alert_type == "waterLeakage" and sensor_type == "water_leakage":
-                if data.get('waterDetected'):
-                    triggered = True
-                    triggered_value = data.get('waterLevel_mm', 0)
-                    message = f"Water leakage detected: {triggered_value}mm"
+                water_detected = data.get('waterDetected')
+                min_val = value_config.get('min')
+                if isinstance(min_val, bool) and water_detected is not None:
+                    if water_detected == min_val:
+                        triggered = True
+                        triggered_value = data.get('waterLevel_mm', 0)
+                        message = f"Water leakage state is {'detected' if water_detected else 'not detected'}: {triggered_value}mm"
+                        print(f"      waterDetected={water_detected}, alert triggers on min={min_val} → TRIGGERED")
+                    else:
+                        print(f"      waterDetected={water_detected}, alert triggers on min={min_val} → not triggered")
+                else:
+                    print(f"      waterLeakage alert skipped: min_val={min_val} is not a bool or waterDetected is None")
             
             # Create notification if triggered
             if triggered:
@@ -971,7 +1030,7 @@ def generate_dummy_door_queue(sensor_info: Dict[str, Any], num_toilets: int) -> 
 
 def generate_dummy_stall_status(sensor_info: Dict[str, Any], num_toilets: int) -> Dict[str, Any]:
     ts = now_dt()
-    state = random.choice(["open", "occupied", "locked", "vacant"])
+    state = random.choice(["open", "occupied", "locked", "vacant", "out_of_order"])
     usageCount = random.randint(50, 500)
     stallId = choose_stall(num_toilets)
     
