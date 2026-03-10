@@ -326,9 +326,9 @@ def evaluate_rule_condition(current_value: Any, rule_min: Any, rule_max: Any) ->
 
     # Numeric threshold checks (only when current value is numeric)
     if current_num is not None:
-        # Both bounds present
+        # Both bounds present — trigger when value is WITHIN the range
         if min_num is not None and max_num is not None:
-            return current_num < min_num or current_num > max_num
+            return min_num <= current_num <= max_num
 
         # Single-bound rules
         if min_num is not None:
@@ -375,7 +375,7 @@ def create_ruleengine_notification(mongo_client: MongoClient,
         if max_val is None:
             condition_text = f"equals {min_val}"
         else:
-            condition_text = f"outside range ({min_val}-{max_val})"
+            condition_text = f"within range ({min_val}-{max_val})"
 
         # platform and email are stored inside values.value, not at rule top-level
         rule_val_obj = ((rule_info.get("values") or {}).get("value")) or {}
@@ -527,10 +527,10 @@ def check_alerts_for_data(mongo_client: MongoClient,
 
                     if min_count is not None and max_count is not None:
                         print(f"      Queue count: {count}, acceptable range: {min_count}-{max_count}")
-                        if count < min_count or count > max_count:
+                        if min_count <= count <= max_count:
                             triggered = True
                             triggered_value = count
-                            message = f"Queue count {count} outside acceptable range ({min_count}-{max_count})"
+                            message = f"Queue count {count} is within range ({min_count}-{max_count})"
                     elif min_count is not None and count < min_count:
                         triggered = True
                         triggered_value = count
@@ -586,10 +586,10 @@ def check_alerts_for_data(mongo_client: MongoClient,
 
                     if min_val is not None and max_val is not None:
                         print(f"      AQI: {aqi}, acceptable range: {min_val}-{max_val}")
-                        if aqi < min_val or aqi > max_val:
+                        if min_val <= aqi <= max_val:
                             triggered = True
                             triggered_value = aqi
-                            message = f"AQI {aqi} outside acceptable range ({min_val}-{max_val})"
+                            message = f"AQI {aqi} is within range ({min_val}-{max_val})"
                     elif min_val is not None and aqi < min_val:
                         triggered = True
                         triggered_value = aqi
@@ -610,7 +610,15 @@ def check_alerts_for_data(mongo_client: MongoClient,
 
                     print(f"Toilet paper level: {level}%, thresholds: min={min_level}, max={max_level}")
 
-                    if min_level is not None and level < min_level:
+                    if min_level is not None and max_level is not None:
+                        if min_level <= level <= max_level:
+                            triggered = True
+                            triggered_value = level
+                            message = f"Toilet paper level {level}% is between {min_level}% and {max_level}%"
+                            print(f"Alert condition met: {min_level} <= {level} <= {max_level}")
+                        else:
+                            print(f"Alert not triggered: {level}% not in range [{min_level}%, {max_level}%]")
+                    elif min_level is not None and level < min_level:
                         triggered = True
                         triggered_value = level
                         message = f"Toilet paper low: {level}% < {min_level}%"
@@ -632,7 +640,15 @@ def check_alerts_for_data(mongo_client: MongoClient,
 
                     print(f"Soap level: {level}%, thresholds: min={min_level}, max={max_level}")
 
-                    if min_level is not None and level < min_level:
+                    if min_level is not None and max_level is not None:
+                        if min_level <= level <= max_level:
+                            triggered = True
+                            triggered_value = level
+                            message = f"Soap level {level}% is between {min_level}% and {max_level}%"
+                            print(f"Alert condition met: {min_level} <= {level} <= {max_level}")
+                        else:
+                            print(f"Alert not triggered: {level}% not in range [{min_level}%, {max_level}%]")
+                    elif min_level is not None and level < min_level:
                         triggered = True
                         triggered_value = level
                         message = f"Soap low: {level}% < {min_level}%"
@@ -654,7 +670,15 @@ def check_alerts_for_data(mongo_client: MongoClient,
 
                     print(f"      Handwash level: {level}%, thresholds: min={min_level}, max={max_level}")
 
-                    if min_level is not None and level < min_level:
+                    if min_level is not None and max_level is not None:
+                        if min_level <= level <= max_level:
+                            triggered = True
+                            triggered_value = level
+                            message = f"Handwash level {level}% is between {min_level}% and {max_level}%"
+                            print(f"      Alert condition met: {min_level} <= {level} <= {max_level}")
+                        else:
+                            print(f"      Alert not triggered: {level}% not in range [{min_level}%, {max_level}%]")
+                    elif min_level is not None and level < min_level:
                         triggered = True
                         triggered_value = level
                         message = f"Handwash low: {level}% < {min_level}%"
