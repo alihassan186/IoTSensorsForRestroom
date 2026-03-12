@@ -457,7 +457,7 @@ def check_rules_for_data(mongo_client: MongoClient,
             rule_max = sensor_rule.get("max")
 
             if evaluate_rule_condition(current_value, rule_min, rule_max):
-                print(f"      ✅ RULE TRIGGERED: {rule.get('name')} for sensor {sensor_id}")
+                print(f"RULE TRIGGERED: {rule.get('name')} for sensor {sensor_id}")
                 create_ruleengine_notification(
                     mongo_client,
                     rule,
