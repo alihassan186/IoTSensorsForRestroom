@@ -474,9 +474,7 @@ def check_alerts_for_data(mongo_client: MongoClient,
                           sensor_info: Dict[str, Any], 
                           data: Dict[str, Any],
                           alerts_list: List[Dict[str, Any]]):
-    """
-    Check if any alerts should be triggered based on the sensor data.
-    """
+   
     sensor_type = sensor_info['sensor_type']
     owner_id = sensor_info['owner_id']
     sensor_id = sensor_info['sensor_id']
