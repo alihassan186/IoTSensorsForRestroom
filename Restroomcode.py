@@ -467,7 +467,7 @@ def check_rules_for_data(mongo_client: MongoClient,
                 )
 
         except Exception as ex:
-            print(f"      [ERROR] Rule-engine check failed for sensor {sensor_id}: {ex}")
+            print(f"    check failed for sensor {sensor_id}: {ex}")
             traceback.print_exc()
 
 def check_alerts_for_data(mongo_client: MongoClient, 
